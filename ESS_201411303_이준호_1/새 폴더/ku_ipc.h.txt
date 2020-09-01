@@ -1,0 +1,49 @@
+#ifndef __KU_IPC_HEADER__
+#define __KU_IPC_HEADER__
+
+/* Requirements */
+#define KUIPC_MAXMSG		10
+#define KUIPC_MAXVOL		135
+
+#define IPC_CREAT		0xFDEF0001
+#define IPC_EXCL		0xFDEF0002
+#define IPC_NOWAIT		0xF0000000
+#define MSG_NOERROR		0x0F000000
+
+struct msgbuf {
+	long 	type;		
+	char* 	text; 		
+};
+
+/* Private flags & structures */
+#define DEV_NAME		"ku_ipc_msgq"
+#define DEV_DIR			"/dev/ku_ipc_msgq"
+
+#define IPC_RES_NOMSQ		0xFDEFCE01
+#define IPC_RES_NOMSG		0xFDEFCE02
+#define IPC_RES_NOVOL		0xFDEFCE03
+#define IPC_RES_FULLMSG		0xFDEFCE04
+#define IPC_RES_FULLVOL		0xFDEFCE05
+#define IPC_RES_SHORT		0xFDEFCE06
+#define IPC_RES_ERROR		0xFDEFCEFF
+
+#define IOCTL_START_NUM		0xDEFCF001
+#define IOCTL_NUM1		IOCTL_START_NUM+1
+#define IOCTL_NUM2		IOCTL_START_NUM+2
+#define IOCTL_NUM3		IOCTL_START_NUM+3
+#define IOCTL_NUM4		IOCTL_START_NUM+4
+#define IOCTL_NUM5		IOCTL_START_NUM+5
+
+#define IPC_IOCTL_NUM 		'k'
+#define IPC_IOCTL_MSQ_CHECK	_IOWR(IPC_IOCTL_NUM, IOCTL_NUM1, unsigned long *)
+#define IPC_IOCTL_MSQ_CREATE	_IOWR(IPC_IOCTL_NUM, IOCTL_NUM2, unsigned long *)
+#define IPC_IOCTL_MSQ_CLOSE	_IOWR(IPC_IOCTL_NUM, IOCTL_NUM3, unsigned long *)
+
+struct mybuf {
+	int			msqid;		/* Message queue id */
+	int			msgflg;		/* Message flags */	
+	int			msgsz;		/* Message size int bytes */
+	struct msgbuf*		msgp;		/* Actual message buffer between source & destination */
+};
+
+#endif

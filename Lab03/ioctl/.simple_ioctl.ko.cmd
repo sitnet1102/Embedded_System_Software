@@ -1,0 +1,1 @@
+cmd_/home/juno/class/Lab3/ioctl/simple_ioctl.ko := ld -r -m elf_x86_64 -z max-page-size=0x200000 -T ./scripts/module-common.lds --build-id  -o /home/juno/class/Lab3/ioctl/simple_ioctl.ko /home/juno/class/Lab3/ioctl/simple_ioctl.o /home/juno/class/Lab3/ioctl/simple_ioctl.mod.o ;  true

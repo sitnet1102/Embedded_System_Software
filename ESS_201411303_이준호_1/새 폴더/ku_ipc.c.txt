@@ -1,0 +1,341 @@
+#include <linux/init.h>
+#include <linux/module.h>
+#include <linux/kernel.h>
+
+#include <linux/fs.h>
+#include <linux/cdev.h>
+#include <linux/errno.h>
+#include <linux/types.h>
+#include <linux/fcntl.h>
+
+#include <linux/list.h>
+#include <linux/slab.h>
+#include <linux/uaccess.h>
+#include <linux/spinlock.h>
+#include <asm/delay.h>
+
+#include "ku_ipc.h"
+
+MODULE_LICENSE("GPL");
+
+struct ku_ipc_msg {
+	struct list_head 	msg_list; 	/* List to list_head of next msg */
+
+	int			index;		/* Index of msg in queue */
+	struct mybuf*		buf;		/* Buffer that contains text */
+	int			len;		/* Length of buf */
+};
+
+struct ku_ipc_msq {
+	struct list_head 	q_list;		/* List to list_head of next msg queue */
+
+	int			key;		/* Key of queue in the kernel module */
+	struct ku_ipc_msg	msg_head;	/* Pointer to head of msg list */
+	int			size;		/* Total number of messages in the queue */
+	int			vol;		/* Total size of message queue */
+
+};
+
+/* Global variables */
+spinlock_t 			ku_ipc_lock;	
+int				ku_ipc_msq_size;
+struct ku_ipc_msq		my_msq;
+
+/* Message */
+static struct ku_ipc_msg* ku_ipc_msg_create(int index, struct mybuf* user_buf, int len);
+static int ku_ipc_msg_delete(struct ku_ipc_msg* msg);
+
+/* Message Queue */
+static struct ku_ipc_msq* ku_ipc_msq_get(int msqid);
+static struct ku_ipc_msq* ku_ipc_msq_create(int key);
+static int ku_ipc_msq_delete(struct ku_ipc_msq* del);
+
+/* Functions to be registered with fops */
+static long ku_ipc_ioctl(struct file *file, unsigned int cmd, unsigned long arg);
+static int ku_ipc_read(struct file* file, char* buf, size_t len, loff_t* lof);
+static int ku_ipc_write(struct file* file, const char* buf, size_t len, loff_t* lof);
+static int ku_ipc_open(struct inode *inode, struct file *file);
+static int ku_ipc_release(struct inode *inode, struct file *file);
+
+static struct ku_ipc_msg* ku_ipc_msg_create(int index, struct mybuf* user_buf, int len) {
+	int rtn = -1;
+	struct ku_ipc_msg* msg = NULL;	
+
+	msg = (struct ku_ipc_msg*)kmalloc(sizeof(struct ku_ipc_msg), GFP_KERNEL);
+	msg->index = index;
+	msg->len = 0;
+
+	msg->buf = (struct mybuf*)kmalloc(sizeof(struct mybuf), GFP_KERNEL);
+	msg->buf->msqid = user_buf->msqid;
+	msg->buf->msgflg = user_buf->msgflg;
+	msg->buf->msgsz = user_buf->msgsz;
+
+	msg->buf->msgp = (struct msgbuf*)kmalloc(sizeof(struct msgbuf), GFP_KERNEL);
+	msg->buf->msgp->type = user_buf->msgp->type;
+	msg->buf->msgp->text = (char*)kmalloc(msg->buf->msgsz, GFP_KERNEL);
+
+	rtn = copy_from_user(msg->buf->msgp->text, user_buf->msgp->text, msg->buf->msgsz);
+	if(rtn < 0) {
+		ku_ipc_msg_delete(msg);
+		return NULL;
+	}
+
+	return msg;
+}
+
+static int ku_ipc_msg_delete(struct ku_ipc_msg* msg) {
+	kfree(msg->buf->msgp->text);
+	kfree(msg->buf->msgp);
+	kfree(msg->buf);
+	kfree(msg);
+		
+	return 0;
+}
+
+static struct ku_ipc_msq* ku_ipc_msq_get(int msqid) {
+	struct ku_ipc_msq* tmp = NULL;
+	struct ku_ipc_msq* target = NULL;
+
+	list_for_each_entry(tmp, &my_msq.q_list, q_list) {
+		if(tmp->key == msqid) {
+			target = tmp;
+			break;
+		}
+	}
+
+	return target;
+}
+
+static struct ku_ipc_msq* ku_ipc_msq_create(int key) {
+	struct ku_ipc_msq* q = NULL;
+
+	q = (struct ku_ipc_msq*)kmalloc(sizeof(struct ku_ipc_msq), GFP_KERNEL);
+	q->key = key;
+	INIT_LIST_HEAD(&q->msg_head.msg_list);
+	q->size = 0;
+	q->vol = 0;
+
+	return q;
+}
+
+static int ku_ipc_msq_delete(struct ku_ipc_msq* msq) {
+	struct list_head* next = NULL;
+	struct list_head* pos = NULL;
+	struct ku_ipc_msg* head_msg = &msq->msg_head;		
+	head_msg = &msq->msg_head;
+	list_for_each_safe(pos, next, &head_msg->msg_list) {
+		ku_ipc_msg_delete(list_entry(pos, struct ku_ipc_msg, msg_list));
+	}
+
+	kfree(msq);
+	return 0;
+}
+
+static long ku_ipc_ioctl(struct file *file, unsigned int cmd, unsigned long arg) {
+	int rtn = -1;
+	int key = *(int*)arg;
+	struct ku_ipc_msq* msq = NULL;
+
+	switch(cmd) {
+	case IPC_IOCTL_MSQ_CHECK:;
+		msq = ku_ipc_msq_get(key);
+		if(msq) {
+			rtn = msq->key;
+		} else {
+			rtn = IPC_RES_NOMSQ;
+		}
+		break;
+	
+	case IPC_IOCTL_MSQ_CREATE:;
+		msq = ku_ipc_msq_create(key);
+		list_add_tail(&msq->q_list, &my_msq.q_list);
+		rtn = msq->key;
+		break;
+
+	case IPC_IOCTL_MSQ_CLOSE:
+		msq = ku_ipc_msq_get(key);
+		rtn = msq->key;
+		list_del(&msq->q_list);
+		ku_ipc_msq_delete(msq);
+		break;
+
+	default:
+		break;
+	}
+
+	return rtn;
+}
+
+static int ku_ipc_read(struct file* file, char* buf, size_t len, loff_t* lof) {
+	struct ku_ipc_msq* msq = NULL;		/* Target message queue */
+	struct ku_ipc_msg* msg = NULL;		/* Target message */
+	struct mybuf* kernel_buf = NULL;	/* Target buffer */
+	struct mybuf* user_buf = NULL;		/* Buffer copied from kernel_buf, user buffer */
+	
+	/* Variables that used in target searching in queue */
+	struct list_head* next = NULL;		
+	struct list_head* pos = NULL;
+	struct ku_ipc_msg* head_msg = NULL;
+	struct ku_ipc_msg* tmp = NULL;
+
+	int rtn = 0;
+
+	spin_lock(&ku_ipc_lock);
+	
+	user_buf = (struct mybuf*)buf;
+
+	/* Finding target queue */
+	msq = ku_ipc_msq_get(user_buf->msqid);
+	if(!msq) {
+		spin_unlock(&ku_ipc_lock);
+		return IPC_RES_NOMSQ;
+	}
+	if(msq->size - 1 < 0) {
+		spin_unlock(&ku_ipc_lock);
+		return IPC_RES_NOMSG;
+	}
+	if(msq->vol <= 0) {
+		spin_unlock(&ku_ipc_lock);
+		return IPC_RES_NOVOL;
+	}
+
+	/* Searching for message that has same type with user provided */
+	head_msg = &msq->msg_head;
+	list_for_each_safe(pos, next, &head_msg->msg_list) {
+		tmp = list_entry(pos, struct ku_ipc_msg, msg_list);	
+		if(tmp->buf->msgp->type == user_buf->msgp->type) {
+			msg = tmp;
+			kernel_buf = msg->buf;
+			break;
+		}
+	}
+
+	if(!kernel_buf) {
+		spin_unlock(&ku_ipc_lock);
+		return IPC_RES_NOMSG;
+	}
+	
+	/* Copying text to user_buf */
+	if(len >= kernel_buf->msgsz) {
+		len = kernel_buf->msgsz;
+		rtn = copy_to_user(user_buf->msgp->text, kernel_buf->msgp->text, len);
+		if(rtn < 0) {
+			spin_unlock(&ku_ipc_lock);
+			return IPC_RES_ERROR;
+		}
+	} else {
+		if((user_buf->msgflg & MSG_NOERROR) != 0) {
+			rtn = copy_to_user(user_buf->msgp->text, kernel_buf->msgp->text, len);	
+			if(rtn < 0) {
+				spin_unlock(&ku_ipc_lock);
+				return IPC_RES_ERROR;
+			}
+		} else {
+			spin_unlock(&ku_ipc_lock);
+			return IPC_RES_SHORT;
+		}
+	}
+
+	/* After copying, delete the message from queue */
+	list_del(pos);
+	ku_ipc_msg_delete(msg);
+	msq->size--;
+	msq->vol -= kernel_buf->msgsz;
+
+	spin_unlock(&ku_ipc_lock);
+
+	return len;
+}
+
+static int ku_ipc_write(struct file* file, const char* buf, size_t len, loff_t* lof) {
+	struct ku_ipc_msq* msq = NULL;			/* Target message queue */
+	struct ku_ipc_msg* new_msg = NULL;		/* Target buffer be created and copied to kernel */
+	struct mybuf* user_buf = (struct mybuf*)buf;
+
+	int ret = 0;
+
+	spin_lock(&ku_ipc_lock);
+
+	/* Searching message queue by key */
+	msq = ku_ipc_msq_get((user_buf->msqid));
+	if(!msq) {
+		spin_unlock(&ku_ipc_lock);
+		return IPC_RES_NOMSQ;
+	}
+	if((msq->size + 1) > KUIPC_MAXMSG) {
+		spin_unlock(&ku_ipc_lock);
+		return IPC_RES_FULLMSG;
+	}
+	if((msq->vol + len) > KUIPC_MAXVOL) {
+		spin_unlock(&ku_ipc_lock);
+		return IPC_RES_FULLVOL;
+	}
+
+	/* Creating new message and add to queue, after increasing size and volume of queue */
+	new_msg = ku_ipc_msg_create(msq->size + 1, user_buf, len);
+	if(!new_msg) {
+		spin_unlock(&ku_ipc_lock);
+		return IPC_RES_ERROR;
+	}
+	
+	list_add_tail(&new_msg->msg_list, &msq->msg_head.msg_list);
+
+	msq->size++;
+	msq->vol += len;
+
+	spin_unlock(&ku_ipc_lock);
+
+	return ret;
+}
+
+static int ku_ipc_open(struct inode *inode, struct file *file){
+	printk("OPEN ku_ipc_open\n");
+	return 0;
+}
+
+static int ku_ipc_release(struct inode *inode, struct file *file){
+	printk("RELEASE ku_ipc release\n");
+	return 0;
+}
+
+static dev_t 		dev_num;
+static struct cdev 	*cd_cdev;
+
+struct file_operations ku_ipc_fops = {
+	.unlocked_ioctl = ku_ipc_ioctl,
+	.read = ku_ipc_read,
+	.write = ku_ipc_write,
+	.open = ku_ipc_open,
+	.release = ku_ipc_release,
+};
+
+static int __init ku_ipc_init(void){
+	int ret;
+	
+	printk("INIT ku_ipc_init\n");
+
+	alloc_chrdev_region(&dev_num, 0, 1, DEV_NAME);
+	cd_cdev = cdev_alloc();
+	cdev_init(cd_cdev, &ku_ipc_fops);
+	ret = cdev_add(cd_cdev, dev_num, 1);
+	if(ret < 0){
+		printk("fail to add character device\n");
+		return -1;
+	}
+
+	ku_ipc_msq_size = 0;	
+	spin_lock_init(&ku_ipc_lock);
+	INIT_LIST_HEAD(&my_msq.q_list);
+
+	return 0;
+}
+
+static void __exit ku_ipc_exit(void){
+	printk("EXIT ku_ipc_exit\n");
+	
+	cdev_del(cd_cdev);
+	unregister_chrdev_region(dev_num, 1);
+}
+
+module_init(ku_ipc_init);
+module_exit(ku_ipc_exit);

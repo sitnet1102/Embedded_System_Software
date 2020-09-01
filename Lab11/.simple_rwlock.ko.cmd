@@ -1,0 +1,1 @@
+cmd_/home/juno/ESS/Lab11/simple_rwlock.ko := /usr/bin/arm-linux-gnueabi-ld -r  -EL -T ./scripts/module-common.lds -T ./arch/arm/kernel/module.lds  --build-id  -o /home/juno/ESS/Lab11/simple_rwlock.ko /home/juno/ESS/Lab11/simple_rwlock.o /home/juno/ESS/Lab11/simple_rwlock.mod.o ;  true

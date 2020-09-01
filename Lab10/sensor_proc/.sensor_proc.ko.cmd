@@ -1,0 +1,1 @@
+cmd_/home/juno/ESS/Lab10/sensor_proc/sensor_proc.ko := /usr/bin/arm-linux-gnueabi-ld -r  -EL -T ./scripts/module-common.lds -T ./arch/arm/kernel/module.lds  --build-id  -o /home/juno/ESS/Lab10/sensor_proc/sensor_proc.ko /home/juno/ESS/Lab10/sensor_proc/sensor_proc.o /home/juno/ESS/Lab10/sensor_proc/sensor_proc.mod.o ;  true
