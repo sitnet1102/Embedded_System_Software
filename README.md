@@ -11,3 +11,4 @@ These are realized on kernel level.
 - Network : Built-in WiFi & Bluetooth
 - GPIO : 40 pins
 - Micro SD Card : 8GB
+--
